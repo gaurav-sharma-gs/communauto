@@ -65,7 +65,7 @@ const branchId = branchIds[values.city];
 console.log('Using City Branch: %s. Branch ID: %i', values.city, branchId);
 
 // Hard-coded location: Replace these values with the desired latitude and longitude
-const hardCodedLocation =  [43.64307110211365, -79.40381273199814]
+const hardCodedLocation =  [43.6532, -79.3832]
 // [43.6532, -79.3832]; // Example: Toronto coordinates
 
 const location = values.location ? values.location.split(',').map(c => parseFloat(c.trim())) : hardCodedLocation;
