@@ -1,0 +1,376 @@
+:root {
+  color-scheme: light;
+  font-family: 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.6;
+  background-color: #f2f6ea;
+  color: #1f2612;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #f2f6ea;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+}
+
+a {
+  color: inherit;
+}
+
+header {
+  background: linear-gradient(135deg, #84bd00, #5a8d00);
+  color: #fff;
+  position: relative;
+  overflow: hidden;
+}
+
+.header-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2.75rem 5vw;
+  position: relative;
+  z-index: 1;
+}
+
+header::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.25), transparent 55%);
+  pointer-events: none;
+}
+
+header h1 {
+  margin: 0;
+  font-size: clamp(2.1rem, 4vw, 2.8rem);
+  font-weight: 700;
+}
+
+header p {
+  margin: 0.65rem 0 0;
+  max-width: 640px;
+  font-size: 1.05rem;
+  opacity: 0.95;
+}
+
+main {
+  flex: 1;
+  max-width: 960px;
+  width: 100%;
+  margin: 3.5rem auto 4rem;
+  padding: 0 5vw;
+  display: grid;
+  gap: 1.6rem;
+}
+
+section {
+  background: #fff;
+  border-radius: 18px;
+  box-shadow: 0 26px 60px rgba(24, 62, 6, 0.08);
+  padding: 1.35rem 1.5rem;
+  position: relative;
+}
+
+.controls {
+  display: grid;
+  gap: 1.1rem;
+  padding-bottom: 1.6rem;
+}
+
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.controls label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+.controls input,
+.controls select,
+.refresh-controls input,
+.reminder input,
+.alerts input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.65rem 0.75rem;
+  font-size: 1rem;
+  border-radius: 12px;
+  border: 1px solid #d7e4c3;
+  background: #f9fbf4;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.controls input:focus,
+.controls select:focus,
+.refresh-controls input:focus,
+.reminder input:focus,
+.alerts input:focus {
+  outline: none;
+  border-color: #84bd00;
+  box-shadow: 0 0 0 3px rgba(132, 189, 0, 0.25);
+}
+
+.control-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.button-primary,
+.button-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.7rem 1.1rem;
+  font-weight: 600;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.2s ease;
+}
+
+.button-primary {
+  background: #84bd00;
+  color: #fff;
+  box-shadow: 0 14px 30px rgba(132, 189, 0, 0.2);
+}
+
+.button-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 20px 36px rgba(132, 189, 0, 0.26);
+}
+
+.button-primary:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.button-secondary {
+  background: #e6eed7;
+  color: #2f3a12;
+}
+
+.button-secondary:hover {
+  background: #d7e5c2;
+}
+
+.button-secondary:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.refresh-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.refresh-controls label {
+  font-weight: 600;
+}
+
+.refresh-controls input {
+  width: 5rem;
+  text-align: center;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+#map {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  max-height: 560px;
+  border-radius: 20px;
+  overflow: hidden;
+  margin: 0 auto;
+  padding: 0;
+}
+
+.map-container {
+  position: absolute;
+  inset: 0;
+}
+
+.section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 0.8rem;
+}
+
+.section-heading h2 {
+  margin: 0;
+  font-size: 1.3rem;
+  color: #4b6511;
+}
+
+.hint {
+  font-size: 0.85rem;
+  color: #819467;
+}
+
+.results {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.results ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+  max-height: 460px;
+  overflow-y: auto;
+}
+
+.results li {
+  background: #f9fbf4;
+  padding: 0.85rem 1rem;
+  border-radius: 14px;
+  border: 1px solid #d7e4c3;
+  cursor: pointer;
+  display: grid;
+  gap: 0.3rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.results li:hover,
+.results li:focus-visible {
+  border-color: #84bd00;
+  box-shadow: 0 12px 24px rgba(132, 189, 0, 0.12);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.results li.selected {
+  border-color: #84bd00;
+  background: rgba(132, 189, 0, 0.12);
+  box-shadow: 0 16px 28px rgba(132, 189, 0, 0.16);
+}
+
+.meta {
+  font-size: 0.9rem;
+  color: #677451;
+}
+
+.reminder {
+  display: grid;
+  gap: 0.95rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.status-message {
+  font-size: 0.95rem;
+  color: #4b6511;
+  margin: 0;
+}
+
+.feature-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.65rem 1.1rem;
+  border-radius: 999px;
+  background: #e6eed7;
+  color: #415718;
+  font-weight: 600;
+  border: 1px solid #d7e4c3;
+}
+
+footer {
+  text-align: center;
+  padding: 1.5rem 0;
+  background: #1f2612;
+  color: #fff;
+}
+
+[role="button"]:focus-visible {
+  outline: 3px solid rgba(132, 189, 0, 0.35);
+  outline-offset: 3px;
+}
+/* Improved "My Location" Button */
+.my-location-button {
+  background-color: #fff;
+  border: 0;
+  border-radius: 2px;
+  box-shadow: 0 1px 4px -1px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  margin: 10px;
+  padding: 0;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  transition: background-color 0.15s ease-in-out;
+}
+
+.my-location-button:hover {
+  background-color: #f4f4f4;
+}
+
+.my-location-button svg {
+  width: 20px;
+  height: 20px;
+}
+@media (max-width: 1120px) {
+  main {
+    margin: 2.5rem auto 3rem;
+  }
+
+  .control-buttons,
+  .refresh-controls {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .header-inner {
+    padding: 2.1rem 1.5rem;
+  }
+
+  main {
+    padding: 0 1.25rem;
+    margin-top: -2rem;
+  }
+
+  section {
+    padding: 1.1rem 1.25rem;
+  }
+
+  .control-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .control-buttons {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .button-primary,
+  .button-secondary {
+    width: 100%;
+  }
+}
