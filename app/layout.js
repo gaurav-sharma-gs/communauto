@@ -2,7 +2,7 @@ import Script from 'next/script';
 import './globals.css';
 
 export const metadata = {
-  title: 'CommuneAuto Finder',
+  title: 'CommunAuto Finder',
   description: 'Discover nearby Communauto vehicles with live map tracking and smart alerts.',
 };
 

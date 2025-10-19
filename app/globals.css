@@ -172,8 +172,18 @@ section {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 0.75rem;
+}
+
+.refresh-controls .inline-field {
+  display: flex;
+  flex-direction: column;
+  min-width: 7rem;
+}
+
+.refresh-controls .inline-field label {
+  font-weight: 600;
 }
 
 .refresh-controls label {
@@ -276,6 +286,20 @@ section {
   gap: 0.95rem;
 }
 
+.ntfy {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.ntfy .toggle {
+  justify-content: flex-start;
+}
+
+.status-message.quota {
+  font-size: 0.85rem;
+  color: #819467;
+}
+
 .field {
   display: grid;
   gap: 0.4rem;
@@ -285,18 +309,6 @@ section {
   font-size: 0.95rem;
   color: #4b6511;
   margin: 0;
-}
-
-.feature-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.65rem 1.1rem;
-  border-radius: 999px;
-  background: #e6eed7;
-  color: #415718;
-  font-weight: 600;
-  border: 1px solid #d7e4c3;
 }
 
 footer {
@@ -311,7 +323,7 @@ footer {
   outline-offset: 3px;
 }
 /* Improved "My Location" Button */
-.my-location-button {
+.my-location-control {
   background-color: #fff;
   border: 0;
   border-radius: 2px;
@@ -327,11 +339,11 @@ footer {
   transition: background-color 0.15s ease-in-out;
 }
 
-.my-location-button:hover {
+.my-location-control:hover {
   background-color: #f4f4f4;
 }
 
-.my-location-button svg {
+.my-location-control svg {
   width: 20px;
   height: 20px;
 }

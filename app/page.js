@@ -4,10 +4,28 @@ import { useEffect, useRef, useState } from 'react';
 import Script from 'next/script';
 
 const defaultLocation = { lat: 43.6532, lng: -79.3832 };
-const pollIntervalMs = 45000;
 const radiusSequence = [500, 1000, 3000, 5000, 8000, 10000, 15000];
 const MIN_FETCH_RADIUS_METERS = radiusSequence[0];
 const LOCATION_EPSILON = 0.0001;
+const NTFY_SETTINGS_KEY = 'communeauto-ntfy-settings';
+const NO_CAR_NOTIFICATION_MINUTES = 3;
+
+const describeInterval = seconds => {
+  const rounded = Math.round(seconds);
+  if (rounded >= 60) {
+    const minutes = rounded / 60;
+    const fixed = Number.isInteger(minutes) ? minutes : minutes.toFixed(2);
+    return `${fixed} minute${minutes === 1 ? '' : 's'}`;
+  }
+  return `${rounded} seconds`;
+};
+const REFRESH_INTERVAL_OPTIONS = [
+  { value: '1', label: 'Every 1 minute' },
+  { value: '3', label: 'Every 3 minutes' },
+  { value: '5', label: 'Every 5 minutes' },
+  { value: '10', label: 'Every 10 minutes' },
+  { value: 'custom', label: 'Custom…' },
+];
 
 function toRadians(degrees) {
   return degrees * (Math.PI / 180);
@@ -60,6 +78,7 @@ export default function Home() {
   const userLocationRef = useRef(null);
   const searchCenterRef = useRef(defaultLocation);
   const autoAlertEnabledRef = useRef(false);
+  const sendNotificationsEnabledRef = useRef(false);
   const lastRadiusRef = useRef(radiusSequence[0]);
 
   const [city, setCity] = useState('toronto');
@@ -67,33 +86,138 @@ export default function Home() {
   const [statusMessage, setStatusMessage] = useState('Choose a location to begin searching.');
   const [radiusKm, setRadiusKm] = useState(1.5);
   const [autoAlertEnabled, setAutoAlertEnabled] = useState(false);
-  const [notificationPermission, setNotificationPermission] = useState('default');
-  const [hasHydrated, setHasHydrated] = useState(false);
   const [loadingCars, setLoadingCars] = useState(false);
   const [selectedCarId, setSelectedCarId] = useState(null);
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
+  const [refreshMode, setRefreshMode] = useState('1');
   const [refreshMinutes, setRefreshMinutes] = useState(1);
+  const [sendNotificationsEnabled, setSendNotificationsEnabled] = useState(false);
+  const [ntfySettings, setNtfySettings] = useState({
+    enabled: false,
+    server: 'https://ntfy.sh',
+    topic: '',
+    token: '',
+    priority: 'default',
+  });
+  const [ntfyStatus, setNtfyStatus] = useState('');
+  const lastNoCarNotificationRef = useRef(Date.now());
+  const refreshIntervalSeconds = Math.max(15, refreshMinutes * 60);
+
+  const persistNtfySettings = updater => {
+    setNtfySettings(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(NTFY_SETTINGS_KEY, JSON.stringify(next));
+      }
+      return next;
+    });
+  };
+
+  const handleNtfyToggle = event => {
+    const enabled = event.target.checked;
+    setNtfyStatus('');
+    persistNtfySettings(prev => ({ ...prev, enabled }));
+  };
+
+  const handleNtfyInputChange = field => event => {
+    const value = event.target.value;
+    setNtfyStatus('');
+    persistNtfySettings(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleNtfySave = () => {
+    if (ntfySettings.enabled) {
+      if (!ntfySettings.topic) {
+        setNtfyStatus('Enter an ntfy topic to enable alerts.');
+        return;
+      }
+    }
+    setNtfyStatus(ntfySettings.enabled ? 'ntfy alerts enabled.' : 'ntfy alerts disabled.');
+  };
+
+  const handleRefreshOptionChange = event => {
+    const value = event.target.value;
+    setRefreshMode(value);
+    if (value !== 'custom') {
+      setRefreshMinutes(Number(value));
+    }
+  };
+
+  const handleRefreshMinutesChange = event => {
+    const value = Number(event.target.value);
+    setRefreshMode('custom');
+    setRefreshMinutes(value > 0 ? value : 1);
+  };
+
+  const handleAutoRefreshToggle = event => {
+    if (!autoAlertEnabled) return;
+    const enabled = event.target.checked;
+    setAutoRefreshEnabled(enabled);
+    setStatusMessage(
+      enabled
+        ? `Auto refresh enabled. Refreshing every ${describeInterval(refreshIntervalSeconds)}.`
+        : 'Auto refresh disabled.'
+    );
+  };
+
+  const handleSendNotificationsToggle = event => {
+    if (!autoAlertEnabled) return;
+    const enabled = event.target.checked;
+    setSendNotificationsEnabled(enabled);
+    lastNoCarNotificationRef.current = Date.now();
+    setStatusMessage(
+      enabled
+        ? `Live monitoring notifications enabled. Checking every ${describeInterval(refreshIntervalSeconds)}.`
+        : 'Live monitoring enabled without notifications.'
+    );
+  };
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker
-        .register('/sw.js')
-        .catch(err => console.error('Service worker registration failed', err));
+    try {
+      const ntfyStored = localStorage.getItem(NTFY_SETTINGS_KEY);
+      if (ntfyStored) {
+        const parsed = JSON.parse(ntfyStored);
+        setNtfySettings(prev => ({ ...prev, ...parsed }));
+      }
+    } catch (err) {
+      console.warn('Failed to parse ntfy settings', err);
     }
   }, []);
 
   useEffect(() => {
-    setHasHydrated(true);
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      setNotificationPermission(Notification.permission);
-    }
-  }, []);
+    if (typeof window === 'undefined') return;
+
+    const shouldNotifyOnUnload =
+      autoAlertEnabled &&
+      sendNotificationsEnabled &&
+      ntfySettings.enabled &&
+      ntfySettings.topic &&
+      ntfySettings.server;
+    if (!shouldNotifyOnUnload) return;
+
+    const handleBeforeUnload = () => {
+      sendNtfyNotification(
+        'Live monitor stopped',
+        'Monitoring ended because the browser window closed.',
+        { useBeacon: true },
+      );
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [autoAlertEnabled, sendNotificationsEnabled, ntfySettings.enabled, ntfySettings.server, ntfySettings.topic, ntfySettings.token, ntfySettings.priority]);
 
   useEffect(() => {
     autoAlertEnabledRef.current = autoAlertEnabled;
   }, [autoAlertEnabled]);
+
+  useEffect(() => {
+    sendNotificationsEnabledRef.current = autoAlertEnabled && sendNotificationsEnabled;
+  }, [autoAlertEnabled, sendNotificationsEnabled]);
 
   useEffect(() => {
     return () => {
@@ -112,18 +236,17 @@ export default function Home() {
       refreshTimerRef.current = null;
     }
 
-    if (!autoRefreshEnabled) {
+    if (!autoAlertEnabled || !autoRefreshEnabled) {
       return;
     }
 
-    const minutes = Number.isFinite(refreshMinutes) && refreshMinutes > 0 ? refreshMinutes : 1;
-    const intervalMs = Math.max(15, minutes * 60) * 1000;
+    const intervalMs = refreshIntervalSeconds * 1000;
 
     refreshTimerRef.current = setInterval(() => {
       const loadFn = loadCarsRef.current;
       if (loadFn) {
         loadFn({
-          notifyOnArrival: autoAlertEnabledRef.current,
+          notifyOnArrival: sendNotificationsEnabledRef.current,
           origin: searchCenterRef.current,
           radiusOverride: getVisibleRadiusMeters(),
           filterByViewport: true,
@@ -137,7 +260,7 @@ export default function Home() {
         refreshTimerRef.current = null;
       }
     };
-  }, [autoRefreshEnabled, refreshMinutes]);
+  }, [autoAlertEnabled, autoRefreshEnabled, refreshMinutes]);
 
   const fetchCarsForRadius = async ({ origin, radius, plate }) => {
     const params = new URLSearchParams({
@@ -282,6 +405,8 @@ export default function Home() {
         setStatusMessage('No cars within the current map area. Try panning, zooming, or refreshing later.');
       }
 
+      handleNoCarNotification(totalCars);
+
       if (notifyOnArrival) {
         detectCarsWithinRadius(chosenCars, radiusKm);
         const userOrigin = userLocationRef.current;
@@ -324,42 +449,87 @@ export default function Home() {
     triggerNotification(candidates[0]);
   };
 
-  const triggerNotification = car => {
-    const distanceLabel = formatDistance(car.distanceFromUser ?? car.distance);
-    setStatusMessage(`Live monitoring: ${car.brand} ${car.model} spotted ${distanceLabel} away.`);
+  const sendNtfyNotification = async (title, message, { useBeacon = false } = {}) => {
+    if (!ntfySettings.enabled) return;
+    if (!ntfySettings.topic || !ntfySettings.server) return;
 
-    // Ensure the browser supports notifications
-    if (typeof window === 'undefined' || !('Notification' in window)) {
-      console.warn('This browser does not support desktop notification');
+    const payload = {
+      server: ntfySettings.server,
+      topic: ntfySettings.topic,
+      token: ntfySettings.token || undefined,
+      priority: ntfySettings.priority && ntfySettings.priority !== 'default' ? ntfySettings.priority : undefined,
+      title,
+      message,
+    };
+
+    if (useBeacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      try {
+        const endpoint = `${payload.server.replace(/\/$/, '')}/${encodeURIComponent(payload.topic)}`;
+        const url = new URL(endpoint);
+        if (payload.title) url.searchParams.set('title', payload.title);
+        if (payload.priority) url.searchParams.set('priority', payload.priority);
+        if (payload.token) url.searchParams.set('auth', payload.token);
+        const blob = new Blob([payload.message], { type: 'text/plain' });
+        const ok = navigator.sendBeacon(url.toString(), blob);
+        if (!ok) {
+          console.warn('Failed to queue ntfy beacon');
+        }
+      } catch (err) {
+        console.error('ntfy beacon failed', err);
+      }
       return;
     }
 
-    const showBrowserNotification = async () => {
-      try {
-        const registration = await navigator.serviceWorker.ready;
-        await registration.showNotification('Car nearby!', {
-          body: `${car.brand} ${car.model} is ${distanceLabel} from you.`,
-        });
-        new Notification('Car nearby!', {
-          body: `${car.brand} ${car.model} is ${distanceLabel} from you.`,
-        });
-      } catch (err) {
-        console.error('Failed to show service worker notification', err);
-        new Notification('Car nearby!', {
-          body: `${car.brand} ${car.model} is ${distanceLabel} from you.`,
-        });
-      }
-    };
-
-    if (Notification.permission === 'granted') {
-      showBrowserNotification();
-    } else if (Notification.permission === 'default') {
-      Notification.requestPermission().then(permission => {
-        setNotificationPermission(permission);
-        if (permission === 'granted') {
-          showBrowserNotification();
-        }
+    try {
+      const response = await fetch('/api/notify/ntfy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        console.error('Failed to send ntfy notification', data);
+      }
+    } catch (err) {
+      console.error('ntfy notification request failed', err);
+    }
+  };
+
+  const triggerNotification = car => {
+    if (!sendNotificationsEnabledRef.current) return;
+    const distanceLabel = formatDistance(car.distanceFromUser ?? car.distance);
+    setStatusMessage(`Live monitoring: ${car.brand} ${car.model} spotted ${distanceLabel} away.`);
+
+    console.log('[CommuneAuto] triggerNotification', {
+      car,
+      distanceLabel,
+    });
+
+    sendNtfyNotification('Car nearby!', `${car.brand} ${car.model} is ${distanceLabel} from you.`);
+  };
+
+  const triggerNoCarNotification = () => {
+    if (!sendNotificationsEnabledRef.current) return;
+    const body = 'Still searching for available cars near your location...';
+    console.log('[CommuneAuto] triggerNoCarNotification');
+    sendNtfyNotification('Still searching', body);
+  };
+
+  const handleNoCarNotification = totalCars => {
+    if (!sendNotificationsEnabledRef.current) {
+      lastNoCarNotificationRef.current = Date.now();
+      return;
+    }
+    if (totalCars > 0) {
+      lastNoCarNotificationRef.current = Date.now();
+      return;
+    }
+    const intervalMs = Math.max(1, NO_CAR_NOTIFICATION_MINUTES) * 60 * 1000;
+    const now = Date.now();
+    if (now - lastNoCarNotificationRef.current >= intervalMs) {
+      triggerNoCarNotification();
+      lastNoCarNotificationRef.current = now;
     }
   };
 
@@ -388,7 +558,7 @@ export default function Home() {
   };
 
   const refreshAlertsWithUserLocation = async () => {
-    if (!autoAlertEnabledRef.current) return;
+    if (!autoAlertEnabledRef.current || !sendNotificationsEnabledRef.current) return;
     const origin = userLocationRef.current;
     if (!origin) return;
 
@@ -448,7 +618,7 @@ export default function Home() {
     try {
       const viewportRadius = getVisibleRadiusMeters();
       const { radiusUsed, totalCars } = await loadCars({
-        notifyOnArrival: autoAlertEnabledRef.current,
+        notifyOnArrival: sendNotificationsEnabledRef.current,
         origin,
         withSpinner: true,
         filterByViewport: useViewportRadius,
@@ -508,7 +678,7 @@ export default function Home() {
     const loadFn = loadCarsRef.current;
     if (loadFn) {
       loadFn({
-        notifyOnArrival: autoAlertEnabledRef.current,
+        notifyOnArrival: sendNotificationsEnabledRef.current,
         origin: newPosition,
         radiusOverride: getVisibleRadiusMeters(),
         filterByViewport: true,
@@ -547,7 +717,7 @@ export default function Home() {
     setSelectedCarId(carKey(car));
     try {
       const { matchedCar } = await loadCars({
-        notifyOnArrival: autoAlertEnabledRef.current,
+        notifyOnArrival: sendNotificationsEnabledRef.current,
         origin: searchCenterRef.current,
         radiusOverride: getVisibleRadiusMeters(),
         plate: car.plate,
@@ -589,28 +759,6 @@ export default function Home() {
     });
   };
 
-  const requestNotificationAccess = async () => {
-    if (typeof window === 'undefined' || !('Notification' in window)) {
-      setStatusMessage('Notifications not supported by this browser.');
-      return;
-    }
-    try {
-      const permission = await Notification.requestPermission();
-      setNotificationPermission(permission);
-      if (permission !== 'granted') {
-        setStatusMessage('Notification permission denied. Alerts will stay in-app.');
-      } else {
-        setStatusMessage('Browser notifications enabled.');
-      }
-    } catch (err) {
-      console.error('Failed to request notification permission', err);
-    }
-  };
-
-  const notificationLabel = hasHydrated && notificationPermission === 'granted'
-    ? 'Notifications enabled'
-    : 'Enable notifications';
-
   const initializeMap = () => {
     if (!mapElementRef.current) return;
     if (!window.google || !window.google.maps) return;
@@ -628,40 +776,37 @@ export default function Home() {
       gestureHandling: 'greedy',
     });
 
-    // Inside the initializeMap function...
+    if (!myLocationControlRef.current) {
+      const controlButton = document.createElement('button');
+      controlButton.className = 'my-location-control';
+      controlButton.title = 'Center map on my location';
+      controlButton.setAttribute('aria-label', 'Center map on my location');
+      controlButton.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <g fill="none" stroke="#5f6368" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 3v3" />
+            <path d="M12 18v3" />
+            <path d="M3 12h3" />
+            <path d="M18 12h3" />
+          </g>
+        </svg>
+      `;
+      controlButton.addEventListener('click', () => {
+        if (userLocationRef.current) {
+          handleOriginChange(userLocationRef.current, {
+            source: 'geolocation',
+            fitMap: false,
+            useViewportRadius: true,
+          });
+        } else {
+          requestUserLocation();
+        }
+      });
 
-  if (!myLocationControlRef.current) {
-    const controlButton = document.createElement('button');
-    controlButton.className = 'my-location-button'; // The class name for CSS
-    controlButton.title = 'Center map on my location';
-    controlButton.setAttribute('aria-label', 'Center map on my location');
-
-    // Use a reliable inline SVG for the icon
-    controlButton.innerHTML = `
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M12 8C9.79 8 8 9.79 8 12C8 14.21 9.79 16 12 16C14.21 16 16 14.21 16 12C16 9.79 14.21 8 12 8Z" fill="#5f6368"></path>
-        <path d="M19.43 11L22.5 11C22.21 6.13 17.87 2.79 13 2.5V5.57C16.48 5.89 19.11 8.52 19.43 12L19.43 11ZM12 19.43C8.52 19.11 5.89 16.48 5.57 13H2.5C2.79 17.87 7.13 21.21 12 21.5V19.43L12 19.43Z" fill="#5f6368"></path>
-        <path d="M4.57 13H1.5C1.79 17.87 6.13 21.21 11 21.5V18.43C7.52 18.11 4.89 15.48 4.57 12L4.57 13Z" fill="#5f6368"></path>
-        <path d="M11 2.5V5.57C7.52 5.89 4.89 8.52 4.57 12H1.5C1.79 7.13 6.13 3.79 11 3.5V2.5Z" fill="#5f6368"></path>
-      </svg>
-    `;
-
-    // The rest of the function remains the same...
-    controlButton.addEventListener('click', () => {
-      if (userLocationRef.current) {
-        handleOriginChange(userLocationRef.current, {
-          source: 'geolocation',
-          fitMap: false,
-          useViewportRadius: true,
-        });
-      } else {
-        requestUserLocation();
-      }
-    });
-
-    myLocationControlRef.current = controlButton;
-    mapRef.current.controls[window.google.maps.ControlPosition.TOP_RIGHT].push(controlButton);
-  }
+      myLocationControlRef.current = controlButton;
+      mapRef.current.controls[window.google.maps.ControlPosition.RIGHT_BOTTOM].push(controlButton);
+    }
 
     infoWindowRef.current = new window.google.maps.InfoWindow();
     mapRef.current.addListener('idle', handleMapIdle);
@@ -679,7 +824,7 @@ export default function Home() {
     const loadFn = loadCarsRef.current;
     if (loadFn) {
       loadFn({
-        notifyOnArrival: autoAlertEnabledRef.current,
+        notifyOnArrival: sendNotificationsEnabledRef.current,
         origin: searchCenterRef.current,
         radiusOverride: getVisibleRadiusMeters(),
         withSpinner: true,
@@ -689,7 +834,7 @@ export default function Home() {
         setStatusMessage('Unable to refresh cars for the selected city. Try again shortly.');
       });
     }
-    if (autoAlertEnabledRef.current) {
+    if (sendNotificationsEnabledRef.current) {
       refreshAlertsWithUserLocation();
     }
   };
@@ -701,19 +846,45 @@ export default function Home() {
       pollingRef.current = null;
     }
 
-    if (enabled) {
-      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
-        requestNotificationAccess();
-      }
-      setStatusMessage(`Live monitoring enabled. Checking every ${Math.round(pollIntervalMs / 1000)} seconds.`);
-      refreshAlertsWithUserLocation();
-      pollingRef.current = setInterval(() => {
-        refreshAlertsWithUserLocation();
-      }, pollIntervalMs);
-    } else {
+    if (!enabled) {
+      setAutoRefreshEnabled(false);
+      setSendNotificationsEnabled(false);
       setStatusMessage('Live monitoring paused.');
+      lastNoCarNotificationRef.current = Date.now();
+      return;
+    }
+
+    lastNoCarNotificationRef.current = Date.now();
+    setStatusMessage('Live monitoring enabled. Choose options below to auto refresh or send notifications.');
+    if (sendNotificationsEnabledRef.current) {
+      refreshAlertsWithUserLocation();
     }
   };
+
+  useEffect(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+
+    if (!autoAlertEnabled || !sendNotificationsEnabled) {
+      return;
+    }
+
+    lastNoCarNotificationRef.current = Date.now();
+    refreshAlertsWithUserLocation();
+
+    pollingRef.current = setInterval(() => {
+      refreshAlertsWithUserLocation();
+    }, refreshIntervalSeconds * 1000);
+
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+    };
+  }, [autoAlertEnabled, sendNotificationsEnabled, refreshIntervalSeconds]);
 
   return (
     <>
@@ -736,21 +907,46 @@ export default function Home() {
         </div>
       </header>
       <main>
-        <section className="controls">
-          <div className="control-grid">
-            <div>
-              <label htmlFor="city-select">City</label>
-              <select id="city-select" value={city} onChange={handleCityChange}>
-                <option value="toronto">Toronto</option>
-                <option value="montreal">Montreal</option>
-              </select>
-            </div>
-            <div>
-              <label htmlFor="location-search">Search location</label>
-              <input id="location-search" type="search" placeholder="Search for an address or landmark" />
-            </div>
+        <section className="reminder live-monitoring">
+          <div className="live-monitor-header">
+            <h2>Live monitoring</h2>
+            <button
+              className="button-primary"
+              onClick={() => toggleAutoAlert(!autoAlertEnabled)}
+            >
+              {autoAlertEnabled ? 'Disable live monitoring' : 'Enable live monitoring'}
+            </button>
           </div>
+          <div className="live-monitor-options">
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={autoRefreshEnabled}
+                onChange={handleAutoRefreshToggle}
+                disabled={!autoAlertEnabled}
+              />
+              <span>Enable auto refresh</span>
+            </label>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={sendNotificationsEnabled}
+                onChange={handleSendNotificationsToggle}
+                disabled={!autoAlertEnabled}
+              />
+              <span>Send notifications</span>
+            </label>
+          </div>
+          <p className="hint">
+            {autoAlertEnabled
+              ? sendNotificationsEnabled
+                ? `Notifications are sent every ${describeInterval(refreshIntervalSeconds)} for cars within ${radiusKm} km.`
+                : 'Notifications are off. Enable "Send notifications" to receive ntfy alerts.'
+              : 'Enable live monitoring to unlock auto refresh and notification options.'}
+          </p>
+        </section>
 
+        <section className="controls">
           <div className="control-buttons">
             <button className="button-primary" onClick={requestUserLocation} disabled={!mapRef.current}>
               Use my location
@@ -761,7 +957,7 @@ export default function Home() {
                 const loadFn = loadCarsRef.current;
                 if (loadFn) {
                   loadFn({
-                    notifyOnArrival: autoAlertEnabledRef.current,
+                    notifyOnArrival: sendNotificationsEnabledRef.current,
                     origin: searchCenterRef.current,
                     radiusOverride: getVisibleRadiusMeters(),
                     withSpinner: true,
@@ -776,36 +972,54 @@ export default function Home() {
             >
               {loadingCars ? 'Refreshing...' : 'Refresh cars'}
             </button>
-            <button
-              className="button-secondary"
-              onClick={requestNotificationAccess}
-              disabled={notificationPermission === 'granted'}
-            >
-              {notificationLabel}
-            </button>
           </div>
 
-          <div className="refresh-controls">
-            <label htmlFor="refresh-minutes">Auto refresh (minutes)</label>
-            <input
-              id="refresh-minutes"
-              type="number"
-              min="0.25"
-              step="0.25"
-              value={refreshMinutes}
-              onChange={event => setRefreshMinutes(Number(event.target.value))}
-            />
-            <label className="toggle">
+          <div className="refresh-controls control-grid">
+            <div className="field">
+              <label htmlFor="refresh-interval">Auto refresh interval</label>
+              <select
+                id="refresh-interval"
+                value={refreshMode}
+                onChange={handleRefreshOptionChange}
+                disabled={!autoAlertEnabled || !autoRefreshEnabled}
+              >
+                {REFRESH_INTERVAL_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              {refreshMode === 'custom' && (
+                <input
+                  id="refresh-minutes"
+                  type="number"
+                  min="0.25"
+                  step="0.25"
+                  value={refreshMinutes}
+                  onChange={handleRefreshMinutesChange}
+                  disabled={!autoAlertEnabled || !autoRefreshEnabled}
+                />
+              )}
+            </div>
+            <div className="field">
+              <label htmlFor="radius">Search radius (km)</label>
               <input
-                type="checkbox"
-                checked={autoRefreshEnabled}
-                onChange={event => setAutoRefreshEnabled(event.target.checked)}
+                id="radius"
+                type="number"
+                min="0.1"
+                step="0.1"
+                value={radiusKm}
+                onChange={event => setRadiusKm(Number(event.target.value))}
               />
-              <span>Enabled</span>
-            </label>
+            </div>
           </div>
 
           <p className="status-message" role="status">{statusMessage}</p>
+        </section>
+
+        <section className="search-location">
+          <label htmlFor="location-search">Search location</label>
+          <input id="location-search" type="search" placeholder="Search for an address or landmark" />
         </section>
 
         <section id="map">
@@ -851,27 +1065,79 @@ export default function Home() {
           </ul>
         </section>
 
-        <section className="reminder">
-          <h2>Radius alerts</h2>
-          <div className="field">
-            <label htmlFor="radius">Alert radius (km)</label>
+        <section className="ntfy">
+          <div className="section-heading">
+            <h2>ntfy alerts</h2>
+            <span className="hint">Push to any ntfy topic (optionally self-hosted).</span>
+          </div>
+          <label className="toggle">
             <input
-              id="radius"
-              type="number"
-              min="0.1"
-              step="0.1"
-              value={radiusKm}
-              onChange={event => setRadiusKm(Number(event.target.value))}
+              type="checkbox"
+              checked={ntfySettings.enabled}
+              onChange={handleNtfyToggle}
+            />
+            <span>Enable ntfy alerts</span>
+          </label>
+          <div className="field">
+            <label htmlFor="ntfy-server">ntfy server</label>
+            <input
+              id="ntfy-server"
+              type="url"
+              placeholder="https://ntfy.sh"
+              value={ntfySettings.server}
+              onChange={handleNtfyInputChange('server')}
+              disabled={!ntfySettings.enabled}
             />
           </div>
-          <button className="button-primary" onClick={() => toggleAutoAlert(!autoAlertEnabled)}>
-            {autoAlertEnabled ? 'Disable live monitoring' : 'Enable live monitoring'}
+          <div className="field">
+            <label htmlFor="ntfy-topic">Topic</label>
+            <input
+              id="ntfy-topic"
+              type="text"
+              placeholder="communeauto-notify"
+              value={ntfySettings.topic}
+              onChange={handleNtfyInputChange('topic')}
+              disabled={!ntfySettings.enabled}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="ntfy-priority">Priority</label>
+            <select
+              id="ntfy-priority"
+              value={ntfySettings.priority}
+              onChange={handleNtfyInputChange('priority')}
+              disabled={!ntfySettings.enabled}
+            >
+              <option value="default">Default</option>
+              <option value="low">Low</option>
+              <option value="normal">Normal</option>
+              <option value="high">High</option>
+              <option value="urgent">Urgent</option>
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="ntfy-token">Access token (optional)</label>
+            <input
+              id="ntfy-token"
+              type="password"
+              placeholder="Bearer token"
+              value={ntfySettings.token}
+              onChange={handleNtfyInputChange('token')}
+              disabled={!ntfySettings.enabled}
+            />
+          </div>
+          <button className="button-primary" onClick={handleNtfySave}>
+            Save ntfy settings
           </button>
-          <p className="status-message">
-            {autoAlertEnabled
-              ? `Monitoring every ${Math.round(pollIntervalMs / 1000)} seconds for cars within ${radiusKm} km of your location.`
-              : 'Activate live monitoring to receive notifications when cars enter your radius.'}
-          </p>
+          {ntfyStatus && <p className="status-message">{ntfyStatus}</p>}
+        </section>
+
+        <section className="city-selector">
+          <label htmlFor="city-select">City</label>
+          <select id="city-select" value={city} onChange={handleCityChange}>
+            <option value="toronto">Toronto</option>
+            <option value="montreal">Montreal</option>
+          </select>
         </section>
 
       </main>
