@@ -76,6 +76,30 @@ export default function SettingsModal({
                                     Save Configuration
                                 </button>
 
+                                <button
+                                    onClick={() => {
+                                        if (!ntfySettings.topic) {
+                                            alert('Please set a topic first.');
+                                            return;
+                                        }
+                                        const server = ntfySettings.server || 'https://ntfy.sh';
+                                        fetch(`${server}/${ntfySettings.topic}`, {
+                                            method: 'POST',
+                                            body: 'This is a test notification from CommunAuto Finder.',
+                                            headers: { 'Title': 'Test Notification', 'Priority': 'high' }
+                                        })
+                                            .then(res => {
+                                                if (res.ok) alert('Test notification sent! Check your device.');
+                                                else alert('Failed to send test notification.');
+                                            })
+                                            .catch(err => alert('Error sending test notification: ' + err.message));
+                                    }}
+                                    className="save-btn"
+                                    style={{ marginTop: '0.75rem', backgroundColor: '#4b5563' }}
+                                >
+                                    Send Test Notification
+                                </button>
+
                                 {ntfyStatus && (
                                     <p className="status-msg">
                                         {ntfyStatus}

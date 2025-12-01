@@ -584,8 +584,8 @@ export default function Home() {
     <div className="app-container">
       <div className="sidebar">
         <div className="sidebar-content">
-          <div className="p-4 pt-0">
-            <h1 className="text-2xl font-bold text-gray-900 mb-1">Communauto Finder</h1>
+          <div className="p-4">
+            <h1 className="text-2xl font-bold text-gray-900 mb-1">CommunAuto Finder</h1>
             <p className="text-sm text-gray-500 mb-4">{statusMessage}</p>
           </div>
           <CarList
@@ -620,6 +620,10 @@ export default function Home() {
           }}
           alertLocation={alertLocation}
           onClearAlertLocation={handleClearAlertLocation}
+          onManualCheck={() => {
+            setStatusMessage('Checking for cars...');
+            refreshAlertsWithUserLocation();
+          }}
         />
 
         {/* My Location Button - Moved to Bottom Right, above Zoom Controls */}
@@ -669,55 +673,81 @@ export default function Home() {
             position: 'absolute',
             top: '50%',
             left: '50%',
-            transform: 'translate(-50%, -100%)', // Pin tip at center
+            width: 0,
+            height: 0,
             zIndex: 40,
-            pointerEvents: 'auto',
-            cursor: 'pointer',
-            filter: 'drop-shadow(0 4px 6px rgba(0,0,0,0.3))',
+            pointerEvents: 'none', // Allow clicks to pass through the empty container
             display: 'flex',
-            flexDirection: 'column',
+            justifyContent: 'center',
             alignItems: 'center'
           }}
-          onMouseEnter={() => setIsCenterMarkerHovered(true)}
-          onMouseLeave={() => setIsCenterMarkerHovered(false)}
-          onDoubleClick={() => {
-            if (!mapRef.current) return;
-            const center = mapRef.current.getCenter();
-            if (!center) return;
-
-            const newLoc = { lat: center.lat(), lng: center.lng() };
-            alertLocationRef.current = newLoc;
-            setAlertLocation(newLoc);
-
-            // If alerts not enabled, enable them (if topic exists)
-            if (!sendNotificationsEnabled) {
-              if (ntfySettings.topic) {
-                handleSendNotificationsToggle(true);
-                setStatusMessage('Alert location updated to map center.');
-              } else {
-                setIsSettingsOpen(true);
-                setNtfyStatus('Please set a topic to enable alerts from this location.');
-              }
-            } else {
-              setStatusMessage('Alert location updated to map center.');
-              // Trigger immediate refresh
-              loadCars({
-                notifyOnArrival: true,
-                origin: newLoc,
-                radiusOverride: getVisibleRadiusMeters(),
-                filterByViewport: true,
-              });
-            }
-          }}
-          title="Double-click to set alert location here"
         >
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="#1f2937" stroke="#ffffff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
-            <circle cx="12" cy="10" r="3" fill="#ffffff"></circle>
-          </svg>
+          {/* The Pin Icon - Tip at (0,0) */}
+          <div
+            style={{
+              position: 'absolute',
+              bottom: 0,
+              left: '50%',
+              transform: 'translateX(-50%)', // Center horizontally, bottom at container center
+              pointerEvents: 'auto',
+              cursor: 'pointer',
+              filter: 'drop-shadow(0 4px 6px rgba(0,0,0,0.3))',
+              display: 'flex',
+              justifyContent: 'center'
+            }}
+            onMouseEnter={() => setIsCenterMarkerHovered(true)}
+            onMouseLeave={() => setIsCenterMarkerHovered(false)}
+            onDoubleClick={() => {
+              if (!mapRef.current) return;
+              const center = mapRef.current.getCenter();
+              if (!center) return;
+
+              const newLoc = { lat: center.lat(), lng: center.lng() };
+              alertLocationRef.current = newLoc;
+              setAlertLocation(newLoc);
+
+              // If alerts not enabled, enable them (if topic exists)
+              if (!sendNotificationsEnabled) {
+                if (ntfySettings.topic) {
+                  handleSendNotificationsToggle(true);
+                  setStatusMessage('Alert location updated to map center.');
+                  // Trigger immediate refresh
+                  loadCars({
+                    notifyOnArrival: true,
+                    origin: newLoc,
+                    radiusOverride: getVisibleRadiusMeters(),
+                    filterByViewport: true,
+                  });
+                } else {
+                  setIsSettingsOpen(true);
+                  setNtfyStatus('Please set a topic to enable alerts from this location.');
+                }
+              } else {
+                setStatusMessage('Alert location updated to map center.');
+                // Trigger immediate refresh
+                loadCars({
+                  notifyOnArrival: true,
+                  origin: newLoc,
+                  radiusOverride: getVisibleRadiusMeters(),
+                  filterByViewport: true,
+                });
+              }
+            }}
+            title="Double-click to set alert location here"
+          >
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="#1f2937" stroke="#ffffff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+              <circle cx="12" cy="10" r="3" fill="#ffffff"></circle>
+            </svg>
+          </div>
+
+          {/* The Button - Below (0,0) */}
           <button
             style={{
-              marginTop: '8px',
+              position: 'absolute',
+              top: '8px', // Gap below center
+              left: '50%',
+              transform: 'translateX(-50%)',
               backgroundColor: '#1f2937',
               color: 'white',
               fontSize: '11px',
@@ -728,16 +758,11 @@ export default function Home() {
               border: 'none',
               whiteSpace: 'nowrap',
               opacity: isCenterMarkerHovered ? 1 : 0,
-              transform: isCenterMarkerHovered ? 'translateY(0)' : 'translateY(-4px)',
-              transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
               pointerEvents: isCenterMarkerHovered ? 'auto' : 'none',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
+              transition: 'all 0.2s ease-in-out',
+              zIndex: 50
             }}
-            onClick={(e) => {
-              e.stopPropagation(); // Prevent double-click trigger
+            onClick={() => {
               if (!mapRef.current) return;
               const center = mapRef.current.getCenter();
               if (!center) return;
@@ -749,13 +774,19 @@ export default function Home() {
               if (!sendNotificationsEnabled) {
                 if (ntfySettings.topic) {
                   handleSendNotificationsToggle(true);
-                  setStatusMessage('Alert location updated.');
+                  setStatusMessage('Alert location updated to map center.');
+                  loadCars({
+                    notifyOnArrival: true,
+                    origin: newLoc,
+                    radiusOverride: getVisibleRadiusMeters(),
+                    filterByViewport: true,
+                  });
                 } else {
                   setIsSettingsOpen(true);
-                  setNtfyStatus('Set topic to enable alerts.');
+                  setNtfyStatus('Please set a topic to enable alerts from this location.');
                 }
               } else {
-                setStatusMessage('Alert location updated.');
+                setStatusMessage('Alert location updated to map center.');
                 loadCars({
                   notifyOnArrival: true,
                   origin: newLoc,
@@ -765,7 +796,7 @@ export default function Home() {
               }
             }}
           >
-            <span>Set Alert Location</span>
+            Set Alert Location
           </button>
         </div>
       </div>

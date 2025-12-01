@@ -22,7 +22,8 @@ body {
   font-family: var(--font-family);
   color: var(--text-main);
   background: var(--bg-main);
-  overflow: hidden; /* Prevent body scroll for full-screen map */
+  overflow: hidden;
+  /* Prevent body scroll for full-screen map */
   height: 100vh;
   width: 100vw;
 }
@@ -53,7 +54,8 @@ body {
   flex: 1;
   height: 100%;
   position: relative;
-  margin-left: 400px; /* Match sidebar width */
+  margin-left: 400px;
+  /* Match sidebar width */
   width: calc(100% - 400px);
 }
 
@@ -67,11 +69,12 @@ body {
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     transform: translateY(0);
   }
-  
+
   .map-wrapper {
     margin-left: 0;
     width: 100%;
-    height: 50vh; /* Top half */
+    height: 50vh;
+    /* Top half */
   }
 
   .control-panel {
@@ -93,9 +96,11 @@ body {
   padding: 4px;
   color: var(--text-main);
 }
+
 .map-infowindow strong {
   font-size: 1.1em;
 }
+
 .map-infowindow .distance {
   font-size: 0.9em;
   color: var(--primary-color);
@@ -109,7 +114,8 @@ body {
   z-index: 30;
   display: flex;
   gap: 0.75rem;
-  width: 360px; /* Fits inside sidebar width */
+  width: 360px;
+  /* Fits inside sidebar width */
 }
 
 .search-box {
@@ -178,8 +184,7 @@ body {
 .sidebar-content {
   flex: 1;
   overflow-y: auto;
-  padding: 1rem;
-  margin-top: 5rem; /* Space for control panel */
+  padding: 0 1rem 1rem 1rem;
 }
 
 .car-list {
@@ -266,8 +271,15 @@ body {
 }
 
 @keyframes modalIn {
-  from { transform: scale(0.95); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .modal-header {
@@ -291,9 +303,11 @@ body {
   padding: 0.5rem;
   border-radius: 50%;
 }
+
 .close-btn:hover {
   background: #f3f4f6;
 }
+
 .close-btn svg {
   width: 24px;
   height: 24px;
@@ -366,11 +380,11 @@ body {
   transition: .4s;
 }
 
-input:checked + .slider {
+input:checked+.slider {
   background-color: var(--primary-color);
 }
 
-input:checked + .slider:before {
+input:checked+.slider:before {
   transform: translateX(20px);
 }
 
