@@ -1,12 +1,14 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import Script from 'next/script';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import Map from './components/Map';
+import CarList from './components/CarList';
+import ControlPanel from './components/ControlPanel';
+import SettingsModal from './components/SettingsModal';
 
 const defaultLocation = { lat: 43.6532, lng: -79.3832 };
 const radiusSequence = [500, 1000, 3000, 5000, 8000, 10000, 15000];
 const MIN_FETCH_RADIUS_METERS = radiusSequence[0];
-const LOCATION_EPSILON = 0.0001;
 const NTFY_SETTINGS_KEY = 'communeauto-ntfy-settings';
 const NO_CAR_NOTIFICATION_MINUTES = 3;
 
@@ -19,13 +21,6 @@ const describeInterval = seconds => {
   }
   return `${rounded} seconds`;
 };
-const REFRESH_INTERVAL_OPTIONS = [
-  { value: '1', label: 'Every 1 minute' },
-  { value: '3', label: 'Every 3 minutes' },
-  { value: '5', label: 'Every 5 minutes' },
-  { value: '10', label: 'Every 10 minutes' },
-  { value: 'custom', label: 'Custom…' },
-];
 
 function toRadians(degrees) {
   return degrees * (Math.PI / 180);
@@ -42,45 +37,37 @@ function distanceBetweenMeters(pointA, pointB) {
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) *
-      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
 
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return earthRadiusKm * c * 1000;
-}
-
-function metersToLatDegrees(meters) {
-  return meters / 111320;
-}
-
-function metersToLngDegrees(meters, latitude) {
-  return meters / (111320 * Math.cos(toRadians(latitude) || 1));
-}
-
-function carKey(car) {
-  return `${car.plate}-${car.lat.toFixed(5)}-${car.lng.toFixed(5)}`;
 }
 
 function normalizePlate(plate) {
   return plate ? plate.trim().toLowerCase() : '';
 }
 
+function carKey(car) {
+  return `${car.plate}-${car.lat.toFixed(5)}-${car.lng.toFixed(5)}`;
+}
+
 export default function Home() {
-  const mapElementRef = useRef(null);
+  // Refs
   const mapRef = useRef(null);
-  const infoWindowRef = useRef(null);
-  const userMarkerRef = useRef(null);
-  const carMarkersRef = useRef(new Map());
-  const myLocationControlRef = useRef(null);
-  const pollingRef = useRef(null);
-  const refreshTimerRef = useRef(null);
-  const programmaticMoveRef = useRef(false);
   const loadCarsRef = useRef(null);
   const userLocationRef = useRef(null);
+  const alertLocationRef = useRef(null);
+  const [alertLocation, setAlertLocation] = useState(null); // State for rendering marker
+  const [isCenterMarkerHovered, setIsCenterMarkerHovered] = useState(false);
   const searchCenterRef = useRef(defaultLocation);
   const autoAlertEnabledRef = useRef(false);
   const sendNotificationsEnabledRef = useRef(false);
   const lastRadiusRef = useRef(radiusSequence[0]);
+  const lastNoCarNotificationRef = useRef(Date.now());
+  const pollingRef = useRef(null);
+  const refreshTimerRef = useRef(null);
 
+  // State
   const [city, setCity] = useState('toronto');
   const [cars, setCars] = useState([]);
   const [statusMessage, setStatusMessage] = useState('Choose a location to begin searching.');
@@ -88,10 +75,15 @@ export default function Home() {
   const [autoAlertEnabled, setAutoAlertEnabled] = useState(false);
   const [loadingCars, setLoadingCars] = useState(false);
   const [selectedCarId, setSelectedCarId] = useState(null);
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
-  const [refreshMode, setRefreshMode] = useState('1');
-  const [refreshMinutes, setRefreshMinutes] = useState(1);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true); // Default ON
+  const [refreshMinutes, setRefreshMinutes] = useState(5); // Default 5 mins
   const [sendNotificationsEnabled, setSendNotificationsEnabled] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [userLocation, setUserLocation] = useState(null);
+  const [mapCenter, setMapCenter] = useState(defaultLocation);
+  const [isLocating, setIsLocating] = useState(false);
+  const [refreshTimerResetKey, setRefreshTimerResetKey] = useState(0);
+
   const [ntfySettings, setNtfySettings] = useState({
     enabled: false,
     server: 'https://ntfy.sh',
@@ -100,9 +92,10 @@ export default function Home() {
     priority: 'default',
   });
   const [ntfyStatus, setNtfyStatus] = useState('');
-  const lastNoCarNotificationRef = useRef(Date.now());
+
   const refreshIntervalSeconds = Math.max(15, refreshMinutes * 60);
 
+  // --- Ntfy Logic ---
   const persistNtfySettings = updater => {
     setNtfySettings(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
@@ -113,341 +106,35 @@ export default function Home() {
     });
   };
 
-  const handleNtfyToggle = event => {
-    const enabled = event.target.checked;
+  const handleNtfyChange = (field, value) => {
     setNtfyStatus('');
-    persistNtfySettings(prev => ({ ...prev, enabled }));
-  };
-
-  const handleNtfyInputChange = field => event => {
-    const value = event.target.value;
-    setNtfyStatus('');
+    if (field === 'enabled' && value === true) {
+      // Force auto-refresh ON when notifications are enabled
+      setAutoRefreshEnabled(true);
+    }
     persistNtfySettings(prev => ({ ...prev, [field]: value }));
   };
 
   const handleNtfySave = () => {
-    if (ntfySettings.enabled) {
-      if (!ntfySettings.topic) {
-        setNtfyStatus('Enter an ntfy topic to enable alerts.');
-        return;
-      }
-    }
-    setNtfyStatus(ntfySettings.enabled ? 'ntfy alerts enabled.' : 'ntfy alerts disabled.');
-  };
-
-  const handleRefreshOptionChange = event => {
-    const value = event.target.value;
-    setRefreshMode(value);
-    if (value !== 'custom') {
-      setRefreshMinutes(Number(value));
-    }
-  };
-
-  const handleRefreshMinutesChange = event => {
-    const value = Number(event.target.value);
-    setRefreshMode('custom');
-    setRefreshMinutes(value > 0 ? value : 1);
-  };
-
-  const handleAutoRefreshToggle = event => {
-    if (!autoAlertEnabled) return;
-    const enabled = event.target.checked;
-    setAutoRefreshEnabled(enabled);
-    setStatusMessage(
-      enabled
-        ? `Auto refresh enabled. Refreshing every ${describeInterval(refreshIntervalSeconds)}.`
-        : 'Auto refresh disabled.'
-    );
-  };
-
-  const handleSendNotificationsToggle = event => {
-    if (!autoAlertEnabled) return;
-    const enabled = event.target.checked;
-    setSendNotificationsEnabled(enabled);
-    lastNoCarNotificationRef.current = Date.now();
-    setStatusMessage(
-      enabled
-        ? `Live monitoring notifications enabled. Checking every ${describeInterval(refreshIntervalSeconds)}.`
-        : 'Live monitoring enabled without notifications.'
-    );
-  };
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    try {
-      const ntfyStored = localStorage.getItem(NTFY_SETTINGS_KEY);
-      if (ntfyStored) {
-        const parsed = JSON.parse(ntfyStored);
-        setNtfySettings(prev => ({ ...prev, ...parsed }));
-      }
-    } catch (err) {
-      console.warn('Failed to parse ntfy settings', err);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const shouldNotifyOnUnload =
-      autoAlertEnabled &&
-      sendNotificationsEnabled &&
-      ntfySettings.enabled &&
-      ntfySettings.topic &&
-      ntfySettings.server;
-    if (!shouldNotifyOnUnload) return;
-
-    const handleBeforeUnload = () => {
-      sendNtfyNotification(
-        'Live monitor stopped',
-        'Monitoring ended because the browser window closed.',
-        { useBeacon: true },
-      );
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
-  }, [autoAlertEnabled, sendNotificationsEnabled, ntfySettings.enabled, ntfySettings.server, ntfySettings.topic, ntfySettings.token, ntfySettings.priority]);
-
-  useEffect(() => {
-    autoAlertEnabledRef.current = autoAlertEnabled;
-  }, [autoAlertEnabled]);
-
-  useEffect(() => {
-    sendNotificationsEnabledRef.current = autoAlertEnabled && sendNotificationsEnabled;
-  }, [autoAlertEnabled, sendNotificationsEnabled]);
-
-  useEffect(() => {
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-      }
-      if (refreshTimerRef.current) {
-        clearInterval(refreshTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (refreshTimerRef.current) {
-      clearInterval(refreshTimerRef.current);
-      refreshTimerRef.current = null;
-    }
-
-    if (!autoAlertEnabled || !autoRefreshEnabled) {
-      return;
-    }
-
-    const intervalMs = refreshIntervalSeconds * 1000;
-
-    refreshTimerRef.current = setInterval(() => {
-      const loadFn = loadCarsRef.current;
-      if (loadFn) {
-        loadFn({
-          notifyOnArrival: sendNotificationsEnabledRef.current,
-          origin: searchCenterRef.current,
-          radiusOverride: getVisibleRadiusMeters(),
-          filterByViewport: true,
-        }).catch(err => console.error('Auto refresh failed', err));
-      }
-    }, intervalMs);
-
-    return () => {
-      if (refreshTimerRef.current) {
-        clearInterval(refreshTimerRef.current);
-        refreshTimerRef.current = null;
-      }
-    };
-  }, [autoAlertEnabled, autoRefreshEnabled, refreshMinutes]);
-
-  const fetchCarsForRadius = async ({ origin, radius, plate }) => {
-    const params = new URLSearchParams({
-      city,
-      lat: String(origin.lat),
-      lng: String(origin.lng),
-      radius: String(Math.round(radius)),
-    });
-    if (plate) {
-      params.set('plate', plate);
-    }
-
-    const response = await fetch(`/api/cars?${params.toString()}`);
-    if (!response.ok) {
-      throw new Error('Failed to fetch cars');
-    }
-    const data = await response.json();
-    const cars = Array.isArray(data.cars) ? data.cars : [];
-    return cars;
-  };
-
-  const refreshCarMarkers = carsToRender => {
-    if (!window.google || !window.google.maps) return;
-    const map = mapRef.current;
-    if (!map) return;
-
-    carMarkersRef.current.forEach(({ marker }) => marker.setMap(null));
-    carMarkersRef.current.clear();
-
-    carsToRender.forEach(car => {
-      const position = { lat: car.lat, lng: car.lng };
-      const marker = new window.google.maps.Marker({
-        position,
-        map,
-        title: `${car.brand} ${car.model}`,
-      });
-
-      marker.addListener('click', () => focusCarOnMap(car));
-      carMarkersRef.current.set(carKey(car), { marker, car });
-    });
-  };
-
-  const loadCars = async ({
-    notifyOnArrival = false,
-    origin,
-    plate,
-    radiusOverride,
-    withSpinner = false,
-    filterByViewport = true,
-  } = {}) => {
-    const targetOrigin = origin || searchCenterRef.current || defaultLocation;
-    searchCenterRef.current = targetOrigin;
-
-    let chosenCars = [];
-    let chosenRadius = radiusOverride ? Math.max(MIN_FETCH_RADIUS_METERS, radiusOverride) : MIN_FETCH_RADIUS_METERS;
-    let matchedPlateKey = null;
-    let firstNonEmpty = null;
-
-    if (withSpinner) {
-      setLoadingCars(true);
-    }
-
-    if (filterByViewport) {
-      chosenRadius = radiusOverride
-        ? Math.max(MIN_FETCH_RADIUS_METERS, radiusOverride)
-        : getVisibleRadiusMeters();
-      chosenCars = await fetchCarsForRadius({ origin: targetOrigin, radius: chosenRadius, plate });
-      if (plate) {
-        const match = chosenCars.find(c => normalizePlate(c.plate) === normalizePlate(plate));
-        if (match) {
-          matchedPlateKey = carKey(match);
-        }
-      }
+    if (ntfySettings.topic) {
+      setSendNotificationsEnabled(true);
+      setAutoAlertEnabled(true);
+      setAutoRefreshEnabled(true);
+      setNtfyStatus('Topic saved and alerts enabled!');
+      persistNtfySettings(prev => ({ ...prev, enabled: true }));
     } else {
-      const radiiToTry = radiusOverride
-        ? [Math.max(MIN_FETCH_RADIUS_METERS, radiusOverride)]
-        : radiusSequence;
-
-      for (const radius of radiiToTry) {
-        const carsForRadius = await fetchCarsForRadius({ origin: targetOrigin, radius, plate });
-        if (!plate && !firstNonEmpty && carsForRadius.length) {
-          firstNonEmpty = { cars: carsForRadius, radius };
-        }
-
-        if (plate) {
-          chosenCars = carsForRadius;
-          chosenRadius = radius;
-          const match = carsForRadius.find(c => normalizePlate(c.plate) === normalizePlate(plate));
-          if (match) {
-            matchedPlateKey = carKey(match);
-            break;
-          }
-          continue;
-        }
-
-        if (carsForRadius.length) {
-          chosenCars = carsForRadius;
-          chosenRadius = radius;
-          break;
-        }
-
-        chosenCars = carsForRadius;
-        chosenRadius = radius;
-      }
-
-      if (!plate && firstNonEmpty && !chosenCars.length) {
-        chosenCars = firstNonEmpty.cars;
-        chosenRadius = firstNonEmpty.radius;
-      }
-    }
-
-    lastRadiusRef.current = chosenRadius;
-
-    try {
-      const userLocation = userLocationRef.current;
-      const decoratedCars = chosenCars
-        .map(car => {
-          const distanceFromUser = userLocation
-            ? distanceBetweenMeters(userLocation, { lat: car.lat, lng: car.lng })
-            : car.distance;
-          return {
-            ...car,
-            distanceFromUser,
-          };
-        })
-        .sort((a, b) => (a.distanceFromUser ?? a.distance) - (b.distanceFromUser ?? b.distance));
-
-      const visibleDecoratedCars = filterByViewport ? filterCarsToVisibleArea(decoratedCars) : decoratedCars;
-
-      setCars(visibleDecoratedCars);
-      if (selectedCarId && !visibleDecoratedCars.some(item => carKey(item) === selectedCarId)) {
-        setSelectedCarId(null);
-      }
-      refreshCarMarkers(visibleDecoratedCars);
-
-      const totalCars = visibleDecoratedCars.length;
-
-      if (totalCars) {
-        const radiusLabel = chosenRadius < 1000 ? `${chosenRadius} m` : `${(chosenRadius / 1000).toFixed(1)} km`;
-        setStatusMessage(`Showing ${totalCars} car${totalCars === 1 ? '' : 's'} within ${radiusLabel}.`);
-      } else {
-        setStatusMessage('No cars within the current map area. Try panning, zooming, or refreshing later.');
-      }
-
-      handleNoCarNotification(totalCars);
-
-      if (notifyOnArrival) {
-        detectCarsWithinRadius(chosenCars, radiusKm);
-        const userOrigin = userLocationRef.current;
-        if (userOrigin) {
-          const separation = distanceBetweenMeters(userOrigin, targetOrigin);
-          if (separation > chosenRadius) {
-            await refreshAlertsWithUserLocation();
-          }
-        }
-      }
-
-      const matchedCar = matchedPlateKey
-        ? visibleDecoratedCars.find(item => carKey(item) === matchedPlateKey)
-        : undefined;
-
-      return { matchedCar, radiusUsed: chosenRadius, totalCars };
-    } finally {
-      if (withSpinner) {
-        setLoadingCars(false);
-      }
+      setNtfyStatus('Please enter a topic to enable alerts.');
+      setSendNotificationsEnabled(false);
+      setAutoAlertEnabled(false);
+      persistNtfySettings(prev => ({ ...prev, enabled: false }));
     }
   };
 
-  loadCarsRef.current = loadCars;
+  // ... (sendNtfyNotification remains same)
 
-  const detectCarsWithinRadius = (carsToCheck, radius) => {
-    const userLocation = userLocationRef.current;
-    if (!userLocation) return;
+  // ...
 
-    const radiusMeters = radius * 1000;
-    const candidates = carsToCheck
-      .map(car => ({
-        ...car,
-        distanceFromUser: distanceBetweenMeters(userLocation, { lat: car.lat, lng: car.lng }),
-      }))
-      .filter(car => car.distanceFromUser <= radiusMeters)
-      .sort((a, b) => a.distanceFromUser - b.distanceFromUser);
 
-    if (!candidates.length) return;
-    triggerNotification(candidates[0]);
-  };
 
   const sendNtfyNotification = async (title, message, { useBeacon = false } = {}) => {
     if (!ntfySettings.enabled) return;
@@ -470,10 +157,7 @@ export default function Home() {
         if (payload.priority) url.searchParams.set('priority', payload.priority);
         if (payload.token) url.searchParams.set('auth', payload.token);
         const blob = new Blob([payload.message], { type: 'text/plain' });
-        const ok = navigator.sendBeacon(url.toString(), blob);
-        if (!ok) {
-          console.warn('Failed to queue ntfy beacon');
-        }
+        navigator.sendBeacon(url.toString(), blob);
       } catch (err) {
         console.error('ntfy beacon failed', err);
       }
@@ -481,30 +165,26 @@ export default function Home() {
     }
 
     try {
-      const response = await fetch('/api/notify/ntfy', {
+      await fetch('/api/notify/ntfy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        console.error('Failed to send ntfy notification', data);
-      }
     } catch (err) {
       console.error('ntfy notification request failed', err);
     }
   };
 
+  // --- Notification Logic ---
   const triggerNotification = car => {
     if (!sendNotificationsEnabledRef.current) return;
-    const distanceLabel = formatDistance(car.distanceFromUser ?? car.distance);
+    const distanceLabel = car.distanceFromUser < 1000
+      ? `${Math.round(car.distanceFromUser)}m`
+      : `${(car.distanceFromUser / 1000).toFixed(1)}km`;
+
     setStatusMessage(`Live monitoring: ${car.brand} ${car.model} spotted ${distanceLabel} away.`);
 
-    console.log('[CommuneAuto] triggerNotification', {
-      car,
-      distanceLabel,
-    });
+
 
     sendNtfyNotification('Car nearby!', `${car.brand} ${car.model} is ${distanceLabel} from you.`);
   };
@@ -512,7 +192,7 @@ export default function Home() {
   const triggerNoCarNotification = () => {
     if (!sendNotificationsEnabledRef.current) return;
     const body = 'Still searching for available cars near your location...';
-    console.log('[CommuneAuto] triggerNoCarNotification');
+
     sendNtfyNotification('Still searching', body);
   };
 
@@ -531,6 +211,62 @@ export default function Home() {
       triggerNoCarNotification();
       lastNoCarNotificationRef.current = now;
     }
+  };
+
+  const detectCarsWithinRadius = (carsToCheck, radius) => {
+    // Safety check: Don't proceed if notifications are disabled
+    if (!sendNotificationsEnabledRef.current) return;
+
+    // If alert location is set, use it. Otherwise, use the current map center.
+    const alertOrigin = alertLocationRef.current || searchCenterRef.current;
+    if (!alertOrigin) return;
+
+    const radiusMeters = radius * 1000;
+    const candidates = carsToCheck
+      .map(car => ({
+        ...car,
+        distanceFromUser: distanceBetweenMeters(alertOrigin, { lat: car.lat, lng: car.lng }),
+      }))
+      .filter(car => car.distanceFromUser <= radiusMeters)
+      .sort((a, b) => a.distanceFromUser - b.distanceFromUser);
+
+    if (!candidates.length) return;
+    triggerNotification(candidates[0]);
+  };
+
+  const refreshAlertsWithUserLocation = async () => {
+    if (!autoAlertEnabledRef.current || !sendNotificationsEnabledRef.current) return;
+    // If alert location is set, use it. Otherwise, use the current map center.
+    const origin = alertLocationRef.current || searchCenterRef.current;
+    if (!origin) return;
+
+    try {
+      const radiusMeters = Math.max(MIN_FETCH_RADIUS_METERS, radiusKm * 1000);
+      const carsInRadius = await fetchCarsForRadius({ origin, radius: radiusMeters });
+      detectCarsWithinRadius(carsInRadius, radiusKm);
+    } catch (err) {
+      console.error('Failed to refresh alert radius cars', err);
+    }
+  };
+
+  // --- Car Fetching Logic ---
+  const fetchCarsForRadius = async ({ origin, radius, plate }) => {
+    const params = new URLSearchParams({
+      city,
+      lat: String(origin.lat),
+      lng: String(origin.lng),
+      radius: String(Math.round(radius)),
+    });
+    if (plate) {
+      params.set('plate', plate);
+    }
+
+    const response = await fetch(`/api/cars?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch cars');
+    }
+    const data = await response.json();
+    return Array.isArray(data.cars) ? data.cars : [];
   };
 
   const getVisibleRadiusMeters = () => {
@@ -557,600 +293,498 @@ export default function Home() {
     return cars.filter(car => bounds.contains(new window.google.maps.LatLng(car.lat, car.lng)));
   };
 
-  const refreshAlertsWithUserLocation = async () => {
-    if (!autoAlertEnabledRef.current || !sendNotificationsEnabledRef.current) return;
-    const origin = userLocationRef.current;
-    if (!origin) return;
+  const loadCars = useCallback(async ({
+    notifyOnArrival = false,
+    origin,
+    plate,
+    radiusOverride,
+    withSpinner = false,
+    filterByViewport = true,
+  } = {}) => {
+    const targetOrigin = origin || searchCenterRef.current || defaultLocation;
+    searchCenterRef.current = targetOrigin;
+
+    let chosenCars = [];
+    let chosenRadius = radiusOverride ? Math.max(MIN_FETCH_RADIUS_METERS, radiusOverride) : MIN_FETCH_RADIUS_METERS;
+    let matchedPlateKey = null;
+    let firstNonEmpty = null;
+
+    if (withSpinner) {
+      setLoadingCars(true);
+    }
 
     try {
-      const radiusMeters = Math.max(MIN_FETCH_RADIUS_METERS, radiusKm * 1000);
-      const carsInRadius = await fetchCarsForRadius({ origin, radius: radiusMeters });
-      detectCarsWithinRadius(carsInRadius, radiusKm);
+      if (filterByViewport) {
+        chosenRadius = radiusOverride
+          ? Math.max(MIN_FETCH_RADIUS_METERS, radiusOverride)
+          : getVisibleRadiusMeters();
+        chosenCars = await fetchCarsForRadius({ origin: targetOrigin, radius: chosenRadius, plate });
+        if (plate) {
+          const match = chosenCars.find(c => normalizePlate(c.plate) === normalizePlate(plate));
+          if (match) {
+            matchedPlateKey = carKey(match);
+          }
+        }
+      } else {
+        // Fallback radius search logic
+        const radiiToTry = radiusOverride
+          ? [Math.max(MIN_FETCH_RADIUS_METERS, radiusOverride)]
+          : radiusSequence;
+
+        for (const radius of radiiToTry) {
+          const carsForRadius = await fetchCarsForRadius({ origin: targetOrigin, radius, plate });
+          if (!plate && !firstNonEmpty && carsForRadius.length) {
+            firstNonEmpty = { cars: carsForRadius, radius };
+          }
+
+          if (plate) {
+            chosenCars = carsForRadius;
+            chosenRadius = radius;
+            const match = carsForRadius.find(c => normalizePlate(c.plate) === normalizePlate(plate));
+            if (match) {
+              matchedPlateKey = carKey(match);
+              break;
+            }
+            continue;
+          }
+
+          if (carsForRadius.length) {
+            chosenCars = carsForRadius;
+            chosenRadius = radius;
+            break;
+          }
+
+          chosenCars = carsForRadius;
+          chosenRadius = radius;
+        }
+
+        if (!plate && firstNonEmpty && !chosenCars.length) {
+          chosenCars = firstNonEmpty.cars;
+          chosenRadius = firstNonEmpty.radius;
+        }
+      }
+
+      lastRadiusRef.current = chosenRadius;
+
+      const userLoc = userLocationRef.current;
+      const decoratedCars = chosenCars
+        .map(car => {
+          const distanceFromUser = userLoc
+            ? distanceBetweenMeters(userLoc, { lat: car.lat, lng: car.lng })
+            : car.distance;
+          return {
+            ...car,
+            distanceFromUser,
+          };
+        })
+        .sort((a, b) => (a.distanceFromUser ?? a.distance) - (b.distanceFromUser ?? b.distance));
+
+      const visibleDecoratedCars = filterByViewport ? filterCarsToVisibleArea(decoratedCars) : decoratedCars;
+
+      setCars(visibleDecoratedCars);
+
+      const totalCars = visibleDecoratedCars.length;
+      if (totalCars) {
+        const radiusLabel = chosenRadius < 1000 ? `${Math.round(chosenRadius)} m` : `${(chosenRadius / 1000).toFixed(1)} km`;
+        setStatusMessage(`Found ${totalCars} car${totalCars === 1 ? '' : 's'} within ${radiusLabel}.`);
+      } else {
+        setStatusMessage('No cars found in this area.');
+      }
+
+      handleNoCarNotification(totalCars);
+
+      if (notifyOnArrival) {
+        detectCarsWithinRadius(chosenCars, radiusKm);
+        const userOrigin = userLocationRef.current;
+        if (userOrigin) {
+          const separation = distanceBetweenMeters(userOrigin, targetOrigin);
+          if (separation > chosenRadius) {
+            await refreshAlertsWithUserLocation();
+          }
+        }
+      }
+
+      const matchedCar = matchedPlateKey
+        ? visibleDecoratedCars.find(item => carKey(item) === matchedPlateKey)
+        : undefined;
+
+      return { matchedCar, radiusUsed: chosenRadius, totalCars };
     } catch (err) {
-      console.error('Failed to refresh alert radius cars', err);
+      console.error('Error loading cars:', err);
+      setStatusMessage('Failed to load cars.');
+      return { totalCars: 0 };
+    } finally {
+      if (withSpinner) {
+        setLoadingCars(false);
+      }
     }
-  };
+  }, [city, radiusKm]);
 
-  const fitMapToRadius = (origin, radius) => {
-    if (!window.google || !window.google.maps || !mapRef.current) return;
-    const latDelta = metersToLatDegrees(radius);
-    const lngDelta = metersToLngDegrees(radius, origin.lat);
-    const bounds = new window.google.maps.LatLngBounds(
-      new window.google.maps.LatLng(origin.lat - latDelta, origin.lng - lngDelta),
-      new window.google.maps.LatLng(origin.lat + latDelta, origin.lng + lngDelta)
-    );
-    programmaticMoveRef.current = true;
-    mapRef.current.fitBounds(bounds);
-  };
+  loadCarsRef.current = loadCars;
 
-  const showUserMarker = ({ lat, lng }) => {
-    if (!window.google || !window.google.maps || !mapRef.current) return;
-    if (!userMarkerRef.current) {
-      userMarkerRef.current = new window.google.maps.Marker({
-        map: mapRef.current,
-        icon: {
-          path: window.google.maps.SymbolPath.CIRCLE,
-          scale: 9,
-          fillColor: '#4285f4',
-          fillOpacity: 1,
-          strokeColor: '#ffffff',
-          strokeWeight: 2,
-        },
-        zIndex: 999,
-      });
-    }
-    userMarkerRef.current.setPosition({ lat, lng });
-  };
+  // --- Effects ---
 
-  const handleOriginChange = async (coords, { source, fitMap = true, useViewportRadius = false } = {}) => {
-    const origin = { lat: coords.lat, lng: coords.lng };
-
-    if (source === 'geolocation') {
-      userLocationRef.current = origin;
-      showUserMarker(origin);
-    }
-
-    if (mapRef.current) {
-      programmaticMoveRef.current = true;
-      mapRef.current.panTo(origin);
-    }
-
+  // Init Ntfy
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
     try {
-      const viewportRadius = getVisibleRadiusMeters();
-      const { radiusUsed, totalCars } = await loadCars({
-        notifyOnArrival: sendNotificationsEnabledRef.current,
-        origin,
-        withSpinner: true,
-        filterByViewport: useViewportRadius,
-        radiusOverride: useViewportRadius ? viewportRadius : undefined,
-      });
-      if (fitMap && !useViewportRadius) {
-        const viewRadius = totalCars && radiusUsed ? Math.max(radiusUsed, 1000) : 1000;
-        fitMapToRadius(origin, viewRadius);
+      const ntfyStored = localStorage.getItem(NTFY_SETTINGS_KEY);
+      if (ntfyStored) {
+        const parsed = JSON.parse(ntfyStored);
+        setNtfySettings(prev => ({ ...prev, ...parsed }));
+        if (parsed.enabled) {
+          setSendNotificationsEnabled(true);
+          setAutoAlertEnabled(true);
+          setAutoRefreshEnabled(true);
+        }
       }
     } catch (err) {
-      console.error('Failed to load cars for new origin', err);
-      setStatusMessage('Unable to load cars right now. Please try again.');
+      console.warn('Failed to parse ntfy settings', err);
     }
-  };
+  }, []);
 
-  const requestUserLocation = async () => {
-    if (!navigator.geolocation) {
-      setStatusMessage('Geolocation not supported by your browser.');
-      return;
-    }
+  // Update refs
+  useEffect(() => {
+    autoAlertEnabledRef.current = autoAlertEnabled;
+  }, [autoAlertEnabled]);
 
-    setStatusMessage('Locating...');
-    navigator.geolocation.getCurrentPosition(
-      async position => {
-        const { latitude, longitude } = position.coords;
-        await handleOriginChange(
-          { lat: latitude, lng: longitude },
-          { source: 'geolocation', fitMap: false, useViewportRadius: true }
-        );
-        setStatusMessage('Using your current location.');
-      },
-      () => setStatusMessage('Unable to retrieve your location.'),
-      { timeout: 12000 }
-    );
-  };
+  useEffect(() => {
+    sendNotificationsEnabledRef.current = autoAlertEnabled && sendNotificationsEnabled;
+  }, [autoAlertEnabled, sendNotificationsEnabled]);
 
-  const handleMapIdle = () => {
-    if (!mapRef.current) return;
-    if (programmaticMoveRef.current) {
-      programmaticMoveRef.current = false;
-      return;
+  const refreshAlertsRef = useRef(null);
+  refreshAlertsRef.current = refreshAlertsWithUserLocation;
+
+  // Auto Refresh
+  useEffect(() => {
+    if (refreshTimerRef.current) {
+      clearInterval(refreshTimerRef.current);
+      refreshTimerRef.current = null;
     }
 
-    const center = mapRef.current.getCenter();
+    if (!autoRefreshEnabled) return;
+
+    const intervalMs = refreshIntervalSeconds * 1000;
+    refreshTimerRef.current = setInterval(() => {
+      // 1. Update UI (Map View) - Don't trigger alerts from here to avoid duplicates/misses
+      const loadFn = loadCarsRef.current;
+      if (loadFn) {
+        loadFn({
+          notifyOnArrival: false,
+          origin: searchCenterRef.current,
+          radiusOverride: getVisibleRadiusMeters(),
+          filterByViewport: true,
+        }).catch(err => console.error('Auto refresh UI failed', err));
+      }
+
+      // 2. Check Alerts (Background) - Always check the active alert location
+      const refreshAlertsFn = refreshAlertsRef.current;
+      if (refreshAlertsFn) {
+        refreshAlertsFn().catch(err => console.error('Auto refresh Alerts failed', err));
+      }
+    }, intervalMs);
+
+    return () => {
+      if (refreshTimerRef.current) {
+        clearInterval(refreshTimerRef.current);
+      }
+    };
+  }, [autoRefreshEnabled, refreshIntervalSeconds, refreshTimerResetKey]);
+
+  // --- Handlers ---
+
+  const handleMapIdle = useCallback((map) => {
+    mapRef.current = map;
+    const center = map.getCenter();
     if (!center) return;
+
     const newPosition = { lat: center.lat(), lng: center.lng() };
-    const previous = searchCenterRef.current;
+    searchCenterRef.current = newPosition;
 
-    if (
-      previous &&
-      Math.abs(previous.lat - newPosition.lat) < LOCATION_EPSILON &&
-      Math.abs(previous.lng - newPosition.lng) < LOCATION_EPSILON
-    ) {
-      return;
-    }
-
-    const loadFn = loadCarsRef.current;
-    if (loadFn) {
-      loadFn({
-        notifyOnArrival: sendNotificationsEnabledRef.current,
+    // Trigger search on idle
+    if (loadCarsRef.current) {
+      loadCarsRef.current({
+        notifyOnArrival: false, // Don't notify on map pan, only on interval or explicit set
         origin: newPosition,
         radiusOverride: getVisibleRadiusMeters(),
         filterByViewport: true,
-      }).catch(err => console.error('Map idle refresh failed', err));
-    }
-  };
-
-  const focusCarOnMap = car => {
-    if (!window.google || !mapRef.current) return;
-    const entry = carMarkersRef.current.get(carKey(car));
-    if (!entry) return;
-
-    const { marker } = entry;
-    const position = marker.getPosition();
-    if (position) {
-      programmaticMoveRef.current = true;
-      mapRef.current.panTo(position);
-    }
-
-    const infoWindow = infoWindowRef.current || new window.google.maps.InfoWindow();
-    infoWindowRef.current = infoWindow;
-    const distanceLabel = formatDistance(car.distanceFromUser ?? car.distance);
-    const distanceContext = userLocationRef.current ? 'from you' : 'from map center';
-    infoWindow.setContent(`
-      <strong>${car.brand} ${car.model}</strong><br />
-      Plate: ${car.plate}<br />
-      ${distanceLabel} ${distanceContext}
-    `);
-    infoWindow.open({ map: mapRef.current, anchor: marker });
-
-    marker.setAnimation(window.google.maps.Animation.BOUNCE);
-    window.setTimeout(() => marker.setAnimation(null), 1400);
-  };
-
-  const handleCarClick = async car => {
-    setSelectedCarId(carKey(car));
-    try {
-      const { matchedCar } = await loadCars({
-        notifyOnArrival: sendNotificationsEnabledRef.current,
-        origin: searchCenterRef.current,
-        radiusOverride: getVisibleRadiusMeters(),
-        plate: car.plate,
-        withSpinner: true,
-        filterByViewport: true,
       });
-
-      const target = matchedCar || carMarkersRef.current.get(carKey(car))?.car;
-      if (target) {
-        focusCarOnMap(target);
-        setStatusMessage(`${target.brand} ${target.model} confirmed nearby.`);
-      } else {
-        setStatusMessage('This car is no longer available. List updated.');
-      }
-    } catch (err) {
-      console.error('Failed to confirm car', err);
-      setStatusMessage('Unable to confirm that car right now. Please try again.');
     }
-  };
 
-  const setupAutocomplete = () => {
-    const input = document.getElementById('location-search');
-    if (!input || !window.google || !window.google.maps?.places) return;
+    // Reset periodic timer if we are using Map Center for alerts (i.e., no specific alert location set)
+    // This ensures we wait X mins AFTER the user stops moving the map before sending an alert.
+    if (!alertLocationRef.current) {
+      setRefreshTimerResetKey(prev => prev + 1);
+    }
+  }, [loadCars]);
 
-    const autocomplete = new window.google.maps.places.Autocomplete(input, {
-      fields: ['geometry'],
-    });
+  const handleLocationSelect = async (location) => {
+    setMapCenter(location);
+    searchCenterRef.current = location;
 
-    autocomplete.addListener('place_changed', () => {
-      const place = autocomplete.getPlace();
-      if (!place.geometry?.location) {
-        setStatusMessage('Unable to determine that location.');
-        return;
-      }
-      handleOriginChange({ lat: place.geometry.location.lat(), lng: place.geometry.location.lng() }, {
-        source: 'search',
-        fitMap: true,
-      });
+    // Wait for map to move then search (handled by idle)
+    // But we can also force a search with spinner
+    await loadCars({
+      notifyOnArrival: sendNotificationsEnabledRef.current,
+      origin: location,
+      withSpinner: true,
+      filterByViewport: true,
     });
   };
 
-  const initializeMap = () => {
-    if (!mapElementRef.current) return;
-    if (!window.google || !window.google.maps) return;
+  const handleMyLocationClick = () => {
+    if (!navigator.geolocation) {
+      setStatusMessage('Geolocation not supported.');
+      return;
+    }
 
-    mapRef.current = new window.google.maps.Map(mapElementRef.current, {
-      center: defaultLocation,
-      zoom: 14,
-      mapTypeControl: false,
-      streetViewControl: false,
-      fullscreenControl: false,
-      zoomControl: true,
-      zoomControlOptions: {
-        position: window.google.maps.ControlPosition.RIGHT_TOP,
+    setIsLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      position => {
+        const { latitude, longitude } = position.coords;
+        const loc = { lat: latitude, lng: longitude };
+        setUserLocation(loc);
+        userLocationRef.current = loc;
+        setMapCenter(loc);
+        setIsLocating(false);
       },
-      gestureHandling: 'greedy',
-    });
-
-    if (!myLocationControlRef.current) {
-      const controlButton = document.createElement('button');
-      controlButton.className = 'my-location-control';
-      controlButton.title = 'Center map on my location';
-      controlButton.setAttribute('aria-label', 'Center map on my location');
-      controlButton.innerHTML = `
-        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <g fill="none" stroke="#5f6368" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="4" />
-            <path d="M12 3v3" />
-            <path d="M12 18v3" />
-            <path d="M3 12h3" />
-            <path d="M18 12h3" />
-          </g>
-        </svg>
-      `;
-      controlButton.addEventListener('click', () => {
-        if (userLocationRef.current) {
-          handleOriginChange(userLocationRef.current, {
-            source: 'geolocation',
-            fitMap: false,
-            useViewportRadius: true,
-          });
-        } else {
-          requestUserLocation();
-        }
-      });
-
-      myLocationControlRef.current = controlButton;
-      mapRef.current.controls[window.google.maps.ControlPosition.RIGHT_BOTTOM].push(controlButton);
-    }
-
-    infoWindowRef.current = new window.google.maps.InfoWindow();
-    mapRef.current.addListener('idle', handleMapIdle);
-
-    setupAutocomplete();
-
-    handleOriginChange(defaultLocation, { source: 'default', fitMap: true }).catch(err => {
-      console.error('Initial load failed', err);
-    });
+      () => {
+        setStatusMessage('Unable to retrieve location.');
+        setIsLocating(false);
+      },
+      { timeout: 10000 }
+    );
   };
 
-  const handleCityChange = event => {
-    const newCity = event.target.value;
-    setCity(newCity);
-    const loadFn = loadCarsRef.current;
-    if (loadFn) {
-      loadFn({
-        notifyOnArrival: sendNotificationsEnabledRef.current,
-        origin: searchCenterRef.current,
-        radiusOverride: getVisibleRadiusMeters(),
-        withSpinner: true,
-        filterByViewport: true,
-      }).catch(err => {
-        console.error('City change refresh failed', err);
-        setStatusMessage('Unable to refresh cars for the selected city. Try again shortly.');
-      });
-    }
-    if (sendNotificationsEnabledRef.current) {
-      refreshAlertsWithUserLocation();
-    }
+  const handleCarClick = (car) => {
+    setSelectedCarId(carKey(car));
+    setMapCenter({ lat: car.lat, lng: car.lng });
   };
 
-  const toggleAutoAlert = enabled => {
+  const handleSendNotificationsToggle = (enabled) => {
+    if (enabled && !ntfySettings.topic) {
+      setNtfyStatus('Please set a topic first.');
+      return;
+    }
+    setSendNotificationsEnabled(enabled);
     setAutoAlertEnabled(enabled);
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-      pollingRef.current = null;
+    if (enabled) {
+      setAutoRefreshEnabled(true);
     }
-
-    if (!enabled) {
-      setAutoRefreshEnabled(false);
-      setSendNotificationsEnabled(false);
-      setStatusMessage('Live monitoring paused.');
-      lastNoCarNotificationRef.current = Date.now();
-      return;
-    }
-
-    lastNoCarNotificationRef.current = Date.now();
-    setStatusMessage('Live monitoring enabled. Choose options below to auto refresh or send notifications.');
-    if (sendNotificationsEnabledRef.current) {
-      refreshAlertsWithUserLocation();
-    }
+    persistNtfySettings(prev => ({ ...prev, enabled }));
   };
 
-  useEffect(() => {
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-      pollingRef.current = null;
-    }
-
-    if (!autoAlertEnabled || !sendNotificationsEnabled) {
-      return;
-    }
-
-    lastNoCarNotificationRef.current = Date.now();
-    refreshAlertsWithUserLocation();
-
-    pollingRef.current = setInterval(() => {
-      refreshAlertsWithUserLocation();
-    }, refreshIntervalSeconds * 1000);
-
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-    };
-  }, [autoAlertEnabled, sendNotificationsEnabled, refreshIntervalSeconds]);
+  const handleClearAlertLocation = () => {
+    setAlertLocation(null);
+    alertLocationRef.current = null;
+    setStatusMessage('Alert location cleared. Using map center.');
+  };
 
   return (
-    <>
-      <Script
-        src={`https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || ''}&libraries=places`}
-        strategy="afterInteractive"
-        onLoad={() => {
-          if (!mapRef.current) {
-            initializeMap();
-          }
-        }}
-        onError={() => setStatusMessage('Failed to load Google Maps. Check your API key.')}
-      />
-      <header>
-        <div className="header-inner">
-          <h1>CommuneAuto Finder</h1>
-          <p>
-            Discover Communauto vehicles near you, confirm live availability, and keep an eye out for upcoming notification features.
-          </p>
+    <div className="app-container">
+      <div className="sidebar">
+        <div className="sidebar-content">
+          <div className="p-4 pt-0">
+            <h1 className="text-2xl font-bold text-gray-900 mb-1">Communauto Finder</h1>
+            <p className="text-sm text-gray-500 mb-4">{statusMessage}</p>
+          </div>
+          <CarList
+            cars={cars}
+            selectedCarId={selectedCarId}
+            onCarClick={handleCarClick}
+          />
         </div>
-      </header>
-      <main>
-        <section className="reminder live-monitoring">
-          <div className="live-monitor-header">
-            <h2>Live monitoring</h2>
-            <button
-              className="button-primary"
-              onClick={() => toggleAutoAlert(!autoAlertEnabled)}
-            >
-              {autoAlertEnabled ? 'Disable live monitoring' : 'Enable live monitoring'}
-            </button>
-          </div>
-          <div className="live-monitor-options">
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={autoRefreshEnabled}
-                onChange={handleAutoRefreshToggle}
-                disabled={!autoAlertEnabled}
-              />
-              <span>Enable auto refresh</span>
-            </label>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={sendNotificationsEnabled}
-                onChange={handleSendNotificationsToggle}
-                disabled={!autoAlertEnabled}
-              />
-              <span>Send notifications</span>
-            </label>
-          </div>
-          <p className="hint">
-            {autoAlertEnabled
-              ? sendNotificationsEnabled
-                ? `Notifications are sent every ${describeInterval(refreshIntervalSeconds)} for cars within ${radiusKm} km.`
-                : 'Notifications are off. Enable "Send notifications" to receive ntfy alerts.'
-              : 'Enable live monitoring to unlock auto refresh and notification options.'}
-          </p>
-        </section>
+      </div>
 
-        <section className="controls">
-          <div className="control-buttons">
-            <button className="button-primary" onClick={requestUserLocation} disabled={!mapRef.current}>
-              Use my location
-            </button>
-            <button
-              className="button-primary"
-              onClick={() => {
-                const loadFn = loadCarsRef.current;
-                if (loadFn) {
-                  loadFn({
-                    notifyOnArrival: sendNotificationsEnabledRef.current,
-                    origin: searchCenterRef.current,
-                    radiusOverride: getVisibleRadiusMeters(),
-                    withSpinner: true,
-                    filterByViewport: true,
-                  }).catch(err => {
-                    console.error('Manual refresh failed', err);
-                    setStatusMessage('Unable to refresh cars right now. Try again shortly.');
-                  });
+      <div className="map-wrapper">
+        <ControlPanel
+          onLocationSelect={handleLocationSelect}
+          onSettingsClick={() => {
+            setNtfyStatus('');
+            setIsSettingsOpen(true);
+          }}
+          notificationsEnabled={sendNotificationsEnabled}
+          refreshMinutes={refreshMinutes}
+          onToggleNotifications={() => {
+            if (sendNotificationsEnabled) {
+              handleSendNotificationsToggle(false);
+            } else {
+              if (!ntfySettings.topic) {
+                // Open settings if topic is missing
+                setIsSettingsOpen(true);
+                setNtfyStatus('Please set a topic first to enable alerts.');
+                return;
+              }
+              handleSendNotificationsToggle(true);
+            }
+          }}
+          alertLocation={alertLocation}
+          onClearAlertLocation={handleClearAlertLocation}
+        />
+
+        {/* My Location Button - Moved to Bottom Right, above Zoom Controls */}
+        <button
+          onClick={handleMyLocationClick}
+          disabled={isLocating}
+          title="Use my location"
+          style={{
+            position: 'absolute',
+            bottom: '110px', // Adjusted to be above Google Maps zoom controls
+            right: '10px',   // Aligned with zoom controls
+            zIndex: 50,
+            backgroundColor: 'white',
+            border: 'none',
+            borderRadius: '2px', // Match Google Maps style
+            boxShadow: 'rgba(0, 0, 0, 0.3) 0px 1px 4px -1px',
+            width: '40px',
+            height: '40px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            color: '#666'
+          }}
+        >
+          <svg width="24" height="24" viewBox="0 0 24 24" fill={isLocating ? '#3b82f6' : 'currentColor'}>
+            <path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm8.94 3c-.46-4.17-3.77-7.48-7.94-7.94V1h-2v2.06C6.83 3.52 3.52 6.83 3.06 11H1v2h2.06c.46 4.17 3.77 7.48 7.94 7.94V23h2v-2.06c4.17-.46 7.48-3.77 7.94-7.94H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z" />
+          </svg>
+        </button>
+
+
+        <Map
+          cars={cars}
+          center={mapCenter}
+          userLocation={userLocation}
+          selectedCarId={selectedCarId}
+          onMapIdle={handleMapIdle}
+          onCarClick={handleCarClick}
+          onLoad={(map) => { mapRef.current = map; }}
+          notificationsEnabled={sendNotificationsEnabled}
+          alertLocation={alertLocation}
+        />
+
+        {/* Center Marker for Alert Setting */}
+        <div
+          style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -100%)', // Pin tip at center
+            zIndex: 40,
+            pointerEvents: 'auto',
+            cursor: 'pointer',
+            filter: 'drop-shadow(0 4px 6px rgba(0,0,0,0.3))',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center'
+          }}
+          onMouseEnter={() => setIsCenterMarkerHovered(true)}
+          onMouseLeave={() => setIsCenterMarkerHovered(false)}
+          onDoubleClick={() => {
+            if (!mapRef.current) return;
+            const center = mapRef.current.getCenter();
+            if (!center) return;
+
+            const newLoc = { lat: center.lat(), lng: center.lng() };
+            alertLocationRef.current = newLoc;
+            setAlertLocation(newLoc);
+
+            // If alerts not enabled, enable them (if topic exists)
+            if (!sendNotificationsEnabled) {
+              if (ntfySettings.topic) {
+                handleSendNotificationsToggle(true);
+                setStatusMessage('Alert location updated to map center.');
+              } else {
+                setIsSettingsOpen(true);
+                setNtfyStatus('Please set a topic to enable alerts from this location.');
+              }
+            } else {
+              setStatusMessage('Alert location updated to map center.');
+              // Trigger immediate refresh
+              loadCars({
+                notifyOnArrival: true,
+                origin: newLoc,
+                radiusOverride: getVisibleRadiusMeters(),
+                filterByViewport: true,
+              });
+            }
+          }}
+          title="Double-click to set alert location here"
+        >
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="#1f2937" stroke="#ffffff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+            <circle cx="12" cy="10" r="3" fill="#ffffff"></circle>
+          </svg>
+          <button
+            style={{
+              marginTop: '8px',
+              backgroundColor: '#1f2937',
+              color: 'white',
+              fontSize: '11px',
+              fontWeight: '600',
+              padding: '6px 12px',
+              borderRadius: '20px',
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+              border: 'none',
+              whiteSpace: 'nowrap',
+              opacity: isCenterMarkerHovered ? 1 : 0,
+              transform: isCenterMarkerHovered ? 'translateY(0)' : 'translateY(-4px)',
+              transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+              pointerEvents: isCenterMarkerHovered ? 'auto' : 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            onClick={(e) => {
+              e.stopPropagation(); // Prevent double-click trigger
+              if (!mapRef.current) return;
+              const center = mapRef.current.getCenter();
+              if (!center) return;
+
+              const newLoc = { lat: center.lat(), lng: center.lng() };
+              alertLocationRef.current = newLoc;
+              setAlertLocation(newLoc);
+
+              if (!sendNotificationsEnabled) {
+                if (ntfySettings.topic) {
+                  handleSendNotificationsToggle(true);
+                  setStatusMessage('Alert location updated.');
+                } else {
+                  setIsSettingsOpen(true);
+                  setNtfyStatus('Set topic to enable alerts.');
                 }
-              }}
-              disabled={loadingCars}
-            >
-              {loadingCars ? 'Refreshing...' : 'Refresh cars'}
-            </button>
-          </div>
-
-          <div className="refresh-controls control-grid">
-            <div className="field">
-              <label htmlFor="refresh-interval">Auto refresh interval</label>
-              <select
-                id="refresh-interval"
-                value={refreshMode}
-                onChange={handleRefreshOptionChange}
-                disabled={!autoAlertEnabled || !autoRefreshEnabled}
-              >
-                {REFRESH_INTERVAL_OPTIONS.map(option => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              {refreshMode === 'custom' && (
-                <input
-                  id="refresh-minutes"
-                  type="number"
-                  min="0.25"
-                  step="0.25"
-                  value={refreshMinutes}
-                  onChange={handleRefreshMinutesChange}
-                  disabled={!autoAlertEnabled || !autoRefreshEnabled}
-                />
-              )}
-            </div>
-            <div className="field">
-              <label htmlFor="radius">Search radius (km)</label>
-              <input
-                id="radius"
-                type="number"
-                min="0.1"
-                step="0.1"
-                value={radiusKm}
-                onChange={event => setRadiusKm(Number(event.target.value))}
-              />
-            </div>
-          </div>
-
-          <p className="status-message" role="status">{statusMessage}</p>
-        </section>
-
-        <section className="search-location">
-          <label htmlFor="location-search">Search location</label>
-          <input id="location-search" type="search" placeholder="Search for an address or landmark" />
-        </section>
-
-        <section id="map">
-          <div className="map-container" ref={mapElementRef} aria-label="Communauto map" />
-        </section>
-
-        <section className="results" aria-live="polite">
-          <div className="section-heading">
-            <h2>Available cars</h2>
-            <span className="hint">Tap a car to confirm availability</span>
-          </div>
-          <ul>
-            {cars.length === 0 ? (
-              <li>No cars found within the visible map area.</li>
-            ) : (
-              cars.map(car => {
-                const distanceFromUser = car.distanceFromUser ?? car.distance;
-                const distanceContext = userLocationRef.current ? 'from you' : 'from map center';
-                const id = carKey(car);
-                const selected = selectedCarId === id;
-                return (
-                  <li
-                    key={id}
-                    className={selected ? 'selected' : ''}
-                    onClick={() => handleCarClick(car)}
-                    onKeyDown={event => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        handleCarClick(car);
-                      }
-                    }}
-                    tabIndex={0}
-                    role="button"
-                    aria-pressed={selected}
-                  >
-                    <strong>{car.brand} {car.model}</strong>
-                    <span className="meta">Plate {car.plate}</span>
-                    <span className="meta">{formatDistance(distanceFromUser)} {distanceContext}</span>
-                  </li>
-                );
-              })
-            )}
-          </ul>
-        </section>
-
-        <section className="ntfy">
-          <div className="section-heading">
-            <h2>ntfy alerts</h2>
-            <span className="hint">Push to any ntfy topic (optionally self-hosted).</span>
-          </div>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={ntfySettings.enabled}
-              onChange={handleNtfyToggle}
-            />
-            <span>Enable ntfy alerts</span>
-          </label>
-          <div className="field">
-            <label htmlFor="ntfy-server">ntfy server</label>
-            <input
-              id="ntfy-server"
-              type="url"
-              placeholder="https://ntfy.sh"
-              value={ntfySettings.server}
-              onChange={handleNtfyInputChange('server')}
-              disabled={!ntfySettings.enabled}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="ntfy-topic">Topic</label>
-            <input
-              id="ntfy-topic"
-              type="text"
-              placeholder="communeauto-notify"
-              value={ntfySettings.topic}
-              onChange={handleNtfyInputChange('topic')}
-              disabled={!ntfySettings.enabled}
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="ntfy-priority">Priority</label>
-            <select
-              id="ntfy-priority"
-              value={ntfySettings.priority}
-              onChange={handleNtfyInputChange('priority')}
-              disabled={!ntfySettings.enabled}
-            >
-              <option value="default">Default</option>
-              <option value="low">Low</option>
-              <option value="normal">Normal</option>
-              <option value="high">High</option>
-              <option value="urgent">Urgent</option>
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="ntfy-token">Access token (optional)</label>
-            <input
-              id="ntfy-token"
-              type="password"
-              placeholder="Bearer token"
-              value={ntfySettings.token}
-              onChange={handleNtfyInputChange('token')}
-              disabled={!ntfySettings.enabled}
-            />
-          </div>
-          <button className="button-primary" onClick={handleNtfySave}>
-            Save ntfy settings
+              } else {
+                setStatusMessage('Alert location updated.');
+                loadCars({
+                  notifyOnArrival: true,
+                  origin: newLoc,
+                  radiusOverride: getVisibleRadiusMeters(),
+                  filterByViewport: true,
+                });
+              }
+            }}
+          >
+            <span>Set Alert Location</span>
           </button>
-          {ntfyStatus && <p className="status-message">{ntfyStatus}</p>}
-        </section>
+        </div>
+      </div>
 
-        <section className="city-selector">
-          <label htmlFor="city-select">City</label>
-          <select id="city-select" value={city} onChange={handleCityChange}>
-            <option value="toronto">Toronto</option>
-            <option value="montreal">Montreal</option>
-          </select>
-        </section>
 
-      </main>
-      <footer>
-        <small>CommuneAuto Finder &copy; {new Date().getFullYear()}. Data provided by Communauto. Map &copy; Google.</small>
-      </footer>
-    </>
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        refreshMinutes={refreshMinutes}
+        onRefreshMinutesChange={setRefreshMinutes}
+        autoRefreshEnabled={autoRefreshEnabled}
+        onAutoRefreshToggle={(e) => setAutoRefreshEnabled(e.target.checked)}
+        ntfySettings={ntfySettings}
+        onNtfyChange={handleNtfyChange}
+        onNtfySave={handleNtfySave}
+        ntfyStatus={ntfyStatus}
+        sendNotificationsEnabled={sendNotificationsEnabled}
+        onSendNotificationsToggle={(e) => handleSendNotificationsToggle(e.target.checked)}
+      />
+    </div >
   );
-}
-
-function formatDistance(distance) {
-  if (distance < 1000) {
-    return `${Math.round(distance)} m`;
-  }
-  return `${(distance / 1000).toFixed(1)} km`;
 }
